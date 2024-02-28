@@ -1,0 +1,668 @@
+---
+title: "Project Blossom"
+author: "Erick Guevara"
+date: "2024-02-15"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Packages 
+```{r, include=FALSE}
+
+library(tidyverse)
+library(ggplot2)
+library(xts)
+library(nasapower)
+library(e1071)
+library(chillR)
+library(CircStats)
+library(circular)
+library(caret)
+library(glmnet)
+
+```
+
+
+
+## Preprocessing
+# Data Aggregation
+
+```{r}
+
+washington_dc <- get_power(community = "AG",
+                           lonlat = c(-77.0386, 38.8853),
+                           pars= c("T2M", "RH2M","PRECTOTCORR","T2M_MIN", "T2M_MAX"),
+                           dates = c("1981-01-01","2024-02-01"),
+                           temporal_api= "daily")
+
+vancouver <- get_power(community = "AG",
+                           lonlat = c(-123.1636, 49.2237),
+                           pars= c("T2M", "RH2M","PRECTOTCORR","T2M_MIN", "T2M_MAX"),
+                           dates = c("1981-01-01","2024-02-01"),
+                           temporal_api= "daily")
+liestal <- get_power(community = "AG",
+                           lonlat = c(7.730519, 47.4814),
+                           pars= c("T2M", "RH2M","PRECTOTCORR","T2M_MIN", "T2M_MAX"),
+                           dates = c("1981-01-01","2024-02-01"),
+                           temporal_api= "daily")
+new.york <- get_power(community = "AG",
+                           lonlat = c(-73.99809, 40.73040),
+                           pars= c("T2M", "RH2M","PRECTOTCORR","T2M_MIN", "T2M_MAX"),
+                           dates = c("1981-01-01","2024-02-01"),
+                           temporal_api= "daily")
+kyoto <- get_power(community = "AG",
+                           lonlat = c(135.6761, 35.0120),
+                           pars= c("T2M", "RH2M","PRECTOTCORR","T2M_MIN", "T2M_MAX"),
+                           dates = c("1981-01-01","2024-02-01"),
+                           temporal_api= "daily")
+
+washington_dc$locationName <- "Washington.DC"
+vancouver$locationName <- "Vancouver"
+liestal$locationName <- "Liestal"
+new.york$locationName <- "New.York"
+kyoto$locationName <- "Kyoto"
+
+meterological_rawdata <- rbind(washington_dc,vancouver,liestal,new.york,kyoto)
+
+
+#write.csv(washington_dc, "C:/Users/justd/Desktop/washingtondc1981_2024_weather.csv", row.names = FALSE)
+#write.csv(kyoto, "C:/Users/justd/Desktop/kyoto1981_2024_weather.csv", row.names = FALSE)
+#write.csv(new.york, "C:/Users/justd/Desktop/newyork1981_2024_weather.csv", row.names = FALSE)
+#write.csv(liestal, "C:/Users/justd/Desktop/liestal1981_2024_weather.csv", row.names = FALSE)
+
+#write.csv(meterological_rawdata, "C:/Users/justd/Desktop/1981_2024_weather.csv", row.names = FALSE)
+
+```
+
+# Historical Bloom Dates
+
+```{r}  
+
+bloom_kyoto <- read.csv('C:/Users/justd/Desktop/bloom/rawdata/HistoricalBloom/kyoto.csv', header=T )
+bloom_liestal <- read.csv('C:/Users/justd/Desktop/bloom/rawdata/HistoricalBloom/liestal.csv', header=T )
+bloom_vancouver <- read.csv('C:/Users/justd/Desktop/bloom/rawdata/HistoricalBloom/vancouver.csv', header=T )
+bloom_washingtondc <- read.csv('C:/Users/justd/Desktop/bloom/rawdata/HistoricalBloom/washingtondc.csv', header=T )  
+
+historical_bloom <- rbind(bloom_washingtondc,bloom_liestal,bloom_kyoto,bloom_vancouver)
+
+subset_bloom <- historical_bloom %>% 
+  group_by(location) %>%
+  arrange(desc(year)) %>%
+  slice(1:43) %>%
+  ungroup()
+  
+
+```
+
+# Accumaltive Annual/Monthly Chill Hours 
+
+Sub-setting max and min temps to estimate hourly temperature to be able to calculate total chill hours.
+
+```{R, include=F}
+wash_subset <- washington_dc[,c("T2M_MIN", "T2M_MAX","YEAR","DOY")]
+colnames(wash_subset)[c(1,2,3,4)] <- c("Tmin","Tmax","Year","JDay")
+
+van_subset <- vancouver[,c("T2M_MIN", "T2M_MAX","YEAR","DOY")]
+colnames(van_subset)[c(1,2,3,4)] <- c("Tmin","Tmax","Year","JDay")
+
+lies_subset <- liestal[,c("T2M_MIN", "T2M_MAX","YEAR","DOY")]
+colnames(lies_subset)[c(1,2,3,4)] <- c("Tmin","Tmax","Year","JDay")
+
+ny_subset <- new.york[,c("T2M_MIN", "T2M_MAX","YEAR","DOY")]
+colnames(ny_subset)[c(1,2,3,4)] <- c("Tmin","Tmax","Year","JDay")
+
+kyo_subset <- kyoto[,c("T2M_MIN", "T2M_MAX","YEAR","DOY")]
+colnames(kyo_subset)[c(1,2,3,4)] <- c("Tmin","Tmax","Year","JDay")
+
+wash_hourly_temp <- make_hourly_temps(38.8853, wash_subset, keep_sunrise_sunset = F )
+van_hourly_temp <- make_hourly_temps(49.2237, van_subset, keep_sunrise_sunset = F )
+lies_hourly_temp <- make_hourly_temps(47.4814, lies_subset, keep_sunrise_sunset = F )
+ny_hourly_temp <- make_hourly_temps(40.73040, ny_subset, keep_sunrise_sunset = F )
+kyo_hourly_temp <- make_hourly_temps(35.0120, kyo_subset, keep_sunrise_sunset = F )
+
+wash_hourly_temp$locationName <- "Washington.DC"
+van_hourly_temp$locationName <- "Vancouver"
+lies_hourly_temp$locationName <- "Liestal"
+ny_hourly_temp$locationName <- "New.York"
+kyo_hourly_temp$locationName <- "Kyoto"
+
+comb_hourly_temp <- rbind(wash_hourly_temp,van_hourly_temp,lies_hourly_temp,ny_hourly_temp,kyo_hourly_temp)
+#Calculating chill hours and identifying freezing event by location
+```
+
+
+#Calculating freezing duration and classifying
+```{R}
+#Making dataset format into a longer format 
+combtemp_long <- comb_hourly_temp %>% 
+  pivot_longer(cols = starts_with("Hour_"),
+               names_prefix = "Hour_",
+               names_to = "Hour", 
+               values_to = "Temperature") %>%
+  mutate(Hour = as.integer(Hour),
+         Date = as.Date(JDay, origin = paste0(Year-1, "-12-31")),
+         Month = month(Date)) %>%
+  arrange(Year, locationName, Date, Hour)
+
+```
+
+
+```{R}
+#Binary indicator for below-freezing temp
+combtemp_long <- combtemp_long %>%
+  mutate(BelowFreezing = ifelse(Temperature < 0, 1, 0))
+
+
+#Creating a unique identifier for each freeze event 
+
+combtemp_long <- combtemp_long %>% 
+  group_by(locationName, Year, Month) %>%
+  mutate(FreezeChange = BelowFreezing != lag(BelowFreezing, default = first(BelowFreezing)),
+         FreezeEventID = cumsum(FreezeChange)) %>%
+  filter(BelowFreezing == 1) %>%
+  ungroup()
+
+#calculating the duration of each event 
+freeze_duratime <- combtemp_long %>%
+  group_by(locationName, Date, Year, Month, FreezeEventID) %>%
+  summarise(DurationHours = n(), .groups= 'drop')
+
+
+monthly_freeze <- freeze_duratime %>%
+  group_by(locationName, Year, Month) %>%
+  summarise(TotalFreezeHours = sum(DurationHours),
+            FreezeEvents = n(),
+            AvgEventDuration = mean(DurationHours),
+            .groups = 'drop') %>%
+  mutate(FreezeEventOccurred = ifelse(TotalFreezeHours > 0, 1, 0))
+
+all.months <- expand.grid(Year = unique(freeze_duratime$Year),
+                          Month = 1:12,
+                          locationName = unique(freeze_duratime$locationName))
+monthly_freeze <- merge(all.months, monthly_freeze,
+                        by = c("locationName", "Year","Month"),
+                        all.x = T)
+
+monthly_freeze <- monthly_freeze %>%
+  mutate(across(c(TotalFreezeHours, FreezeEvents, AvgEventDuration, FreezeEventOccurred),
+                ~replace(., is.na(.), 0)))
+
+```
+
+#Final preprocessing 
+```{R}
+#monthly_freeze <- monthly_freeze %>%
+  #filter(locationName %in% c("Washington.DC", "Liestal", "Kyoto"))
+
+monthly_freeze <- monthly_freeze %>%
+  filter(
+    !(Year == 2024 & Month > 2) &
+    !(Year < 1981 | (Year == 1981 & Month < 1))
+  )
+```
+
+
+```
+#Annually
+stacked_wash.hourly.temps <- stack_hourly_temps(wash_hourly_temp, latitude = 38.8853)
+stacked_van.hourly.temps <- stack_hourly_temps(van_hourly_temp, latitude = 49.2237)
+stacked_lies.hourly.temps <- stack_hourly_temps(lies_hourly_temp, latitude = 47.4814)
+stacked_ny.hourly.temps <- stack_hourly_temps(ny_hourly_temp, latitude = 40.73040)
+stacked_kyo.hourly.temps <- stack_hourly_temps(kyo_hourly_temp, latitude = 35.0120)
+
+
+
+#Total Chilling hours annually 
+wash.chill.hours <- chilling(stacked_wash.hourly.temps, Start_JDay = 1, End_JDay = 365)
+van.chill.hours <- chilling(stacked_van.hourly.temps, Start_JDay = 1, End_JDay = 365)
+lies.chill.hours <- chilling(stacked_lies.hourly.temps, Start_JDay = 1, End_JDay = 365)
+ny.chill.hours <- chilling(stacked_ny.hourly.temps, Start_JDay = 1, End_JDay = 365)
+kyo.chill.hours <- chilling(stacked_kyo.hourly.temps, Start_JDay = 1, End_JDay = 365)
+
+
+```
+
+
+# Growing Degree Days
+
+```{R, include=F}
+attach(meterological_rawdata)
+
+meterological_rawdata$date <- as.Date(meterological_rawdata$YYYYMMDD)
+meterological_rawdata$Month <- format(meterological_rawdata$YYYYMMDD, "%Y-%m")
+
+meterological_rawdata$daily_GDD <- with(meterological_rawdata, pmax(0,(T2M_MAX + T2M_MIN) / 2 - 10))
+
+
+monthly_GDD <- meterological_rawdata %>%
+  group_by(locationName, Month) %>%
+  summarise(monthly_GDD = sum(daily_GDD))
+
+```
+
+#combining all datasets 
+```{r}
+#meterological_sub <- meterological_rawdata %>%
+  #filter(locationName %in% c("Washington.DC", "Liestal", "Kyoto"))
+  
+#meterological_sub <- meterological_sub %>%
+  #dplyr::select(locationName, date, YEAR, MM, DD, T2M, RH2M, PRECTOTCORR, daily_GDD)
+
+meterological_sub <- meterological_rawdata %>%
+  dplyr::select(locationName, date, YEAR, MM, DD, T2M, RH2M, PRECTOTCORR, daily_GDD)
+
+monthly.metero <- meterological_sub %>% 
+  group_by(locationName, YEAR, MM) %>%
+  summarise(AvgTemp = mean(T2M),
+            AvgHumidity = mean(RH2M),
+            TotalPrecip = sum(PRECTOTCORR),
+            TotalGDD = sum(daily_GDD),
+            .groups = 'drop')
+
+
+```
+
+```{R}
+colnames(monthly.metero)[c(2,3)] <- c("Year","Month")
+monthly.metero <- monthly.metero %>% arrange(Year, locationName, Month)
+monthly_freeze <- monthly_freeze %>% arrange(Year, locationName, Month)
+comb_parameters <- inner_join(monthly.metero, monthly_freeze, by= c('locationName','Year','Month'))
+
+
+
+```
+
+# Viewing Cherry Phases untill first bloom and winter frost
+
+
+
+# Annual GDD and Chill hour trends 
+```{R}
+
+Annual_GDD <- aggregate(GDD ~ Year + locationName, data = meterological_rawdata, sum)
+
+
+plot <- ggplot(annual_GDD, aes(x = as.integer(year), y= GDD, color = locationName)) + 
+  geom_line() + 
+  geom_point() + 
+  theme_minimal() + 
+  labs(title = "Annual GDD Trends OVer 50 Years",
+       x ="Year",
+       y = "Cummulative GDD",
+       color = "Location") + 
+  scale_x_continuous(breaks = seq(min(as.integer(annual_GDD$year)), max(as.integer(annual_GDD$year)), by= 5))
+
+plot
+```
+```{R}
+chill <- ggplot(total.chill.hours, aes(x = as.integer(End_year), y= Chill_portions, color = locationName)) + 
+  geom_line() + 
+  geom_point() + 
+  theme_minimal() + 
+  labs(title = "Annual Chill Hours Trends Over 50 Years",
+       x ="Year",
+       y = "Cummulative Chill Hours",
+       color = "Location") + 
+  scale_x_continuous(breaks = seq(min(as.integer(total.chill.hours$End_year)), max(as.integer(total.chill.hours$End_year)), by= 5))
+
+
+```
+
+## Exploratory Analysis 
+
+#Von Mises Distribution
+
+Examining the mean and variance direction of the circular data 
+
+```
+attach(subset_bloom)
+
+subset_bloom$bloom_date <- as.Date(subset_bloom$bloom_date, format = "%Y-%m-%d")
+
+subset_bloom$Radians = 2 * pi * bloom_doy / 365
+
+subset_bloom$IsLeapYear <- (year %% 4 == 0 & year %% 100 != 0 ) | (year %% 400 == 0)
+subset_bloom$Radians <- ifelse(IsLeapYear, 2 * pi * bloom_doy / 366, Radians)
+
+mean.vm <- circ.mean(Radians)
+vm.dist <- circ.disp(Radians)
+
+vm.dist$mean.vm <- mean.vm
+vm.dist$esti <- est.rho(Radians)
+
+circ.data <- circular(Radians)
+
+bw_val <- bw.nrd(circ.data)
+
+density.esti <- density.circular(circ.data, bw= bw_val)
+
+plot(density.esti, main = "Density of Blooming Dates")
+```
+
+As evident from historical patterns of blooming occurring towards the end of February shown as pi/2 in radians. 
+
+#Combining historical bloom dates with weather data
+
+```
+subset_bloom$bloom_month <- ceiling(subset_bloom$bloom_doy / 30.44)
+
+comb_parameters$YearMonth <- with(comb_parameters, paste(Year, sprintf("%02d", Month), sep = "-"))
+subset_bloom$YearMonth <- with(subset_bloom, paste(year, sprintf("%02d", bloom_month), sep = "-"))
+
+comb_parameters <- merge(comb_parameters, subset_bloom[, c('YearMonth','bloom_month')],
+                         by = 'YearMonth', all.x = TRUE)
+
+comb_parameters$BloomOccureed <- ifelse(!is.na(comb_parameters$bloom_month), 1, NA)
+
+```
+
+
+# Support Vector Machine - Winter Frost Classification 
+
+To analyze the damage and setbacks winter frost has done to the area where cherry blossoms are located, I first create a threshold that will classify the level of intensity of the winter frost and assume the potential damage it could've done based on total annual chilling hours (Duration of freeze), stage classification (Dormant Stage), and levels of freeze (Severity of freeze). All these factors will help quantify the severity of the winter chill to incorporate in the time series prediction. 
+
+```{R}
+freeze.threshold <- quantile(comb_parameters$TotalFreezeHours, prob = .80)
+
+comb_parameters$freezeSeverity <- with(comb_parameters, ifelse(TotalFreezeHours > freeze.threshold & FreezeEventOccurred == 1, 1, 0))
+
+train_features <- comb_parameters[, c('AvgTemp', 'AvgHumidity', 'TotalPrecip', 'TotalGDD', 'TotalFreezeHours', 'FreezeEvents', 'AvgEventDuration')]
+train_labels <- comb_parameters$freezeSeverity
+
+#Splitting the data into training and testing sets 
+train.ind.svm <- sample(seq_len(nrow(comb_parameters)), size = 0.8 * nrow(comb_parameters), replace = FALSE)
+
+train_features_svm <- as.matrix(train_features[train.ind.svm, ])
+train_labels_svm <- as.factor(train_labels[train.ind.svm])
+
+
+test_features_svm <- as.matrix(train_features[-train.ind.svm, ])
+test_labels_svm <- train_labels[-train.ind.svm]
+
+  
+#Training the SVM model 
+
+svm.model <- svm(train_features_svm, train_labels_svm, type = 'C-classification', kernel = 'radial')
+
+#Estimating on the test set 
+
+svm.pred <- predict(svm.model, test_features_svm)
+
+#Evaluating 
+
+conf.mat <- table(Predicted = svm.pred, Actual = test_labels_svm)
+print(conf.mat)
+```
+The confusion matrix shows that there is 279 true negative meaning no severe freeze which shows to be correct. There were only 3 false positives, there were 29 true positives and it was correct. finally, there was no false negatives. 
+
+#Performance Metrics
+```{R}
+TP = 103
+TN = 414
+FP = 0
+FN = 1
+
+
+accuracy = (TP + TN)/(TP +FP+TN+FN)
+accuracy
+precis = TP / (TP + FP)
+precis
+recall = TP / (TP + FN)
+recall
+F1Score = 2 * (precis * recall) / (precis + recall)
+F1Score 
+
+```
+
+
+# Fine Tuning the model 
+
+```{R}
+tune_grid <- expand.grid(
+  cost = 10^(-1:2),  # Example range: from 0.1 to 100
+  gamma = 10^(-2:1)  # Example range: from 0.01 to 10
+)
+
+train_features <- as.matrix(train_features)
+train_labels <- as.factor(train_labels)
+
+# Perform the tuning
+tune_result <- tune(
+  svm,
+  train.x = train_features,
+  train.y = train_labels,
+  type = 'C-classification',
+  kernel = 'radial',
+  ranges = tune_grid
+)
+
+# Extract the best model
+best_model <- tune_result$best.model
+```
+#Retraining the svm model
+
+```{R}
+final_svm_model <- svm(train_features_svm, train_labels_svm, type = 'C-classification', kernel = 'radial', cost = 100)
+
+
+# Apply the model to the test set
+final_svm_pred <- predict(final_svm_model, test_features_svm)
+
+# Create a new confusion matrix with the final model's predictions
+final_conf_mat <- table(Predicted = final_svm_pred, Actual = test_labels_svm)
+print(final_conf_mat)
+
+```
+
+# Post Performance Metrics
+```{r}
+TP = 103
+TN = 414
+FP = 0
+FN = 1
+
+
+accuracy = (TP + TN)/(TP +FP+TN+FN)
+accuracy
+precis = TP / (TP + FP)
+precis
+recall = TP / (TP + FN)
+recall
+F1Score = 2 * (precis * recall) / (precis + recall)
+F1Score 
+```
+Pre and Post model tuning came out to be the same performing results.
+
+
+##LASSO Regression - What's the role of different variables towards predicting bloom intervals
+
+# Creating a binary indicator for when bloom occured 
+
+```{R}
+
+typical_bloom_months <- c(3, 4)
+
+
+#Will be used to merge both sets by Year Month
+comb_parameters$YearMonth <- with(comb_parameters, paste(Year, sprintf("%02d", Month), sep="-"))
+subset_bloom$YearMonth <- with(subset_bloom, paste(year, sprintf("%02d", ceiling(bloom_doy/ 30.44)), sep="-"))
+
+subset_bloom$BloomIndicator <- 1
+
+final.bloom.data <- merge(comb_parameters, subset_bloom[, c('YearMonth', 'bloom_doy')], by = 'YearMonth', all.x = TRUE)
+
+
+final.bloom.data$BloomIndicator <- ifelse(!is.na(final.bloom.data$bloom_doy), 1, 0)
+
+final.bloom.data$BloomIndicator[is.na(final.bloom.data$bloom_doy) & 
+                                final.bloom.data$Month %in% typical_bloom_months] <- 1
+```
+
+```{R}
+x_matrix <- model.matrix(~ freezeSeverity + AvgTemp + AvgHumidity + TotalPrecip + TotalGDD + 
+                         TotalFreezeHours + FreezeEvents + AvgEventDuration - 1, 
+                         data = final.bloom.data)
+x_matrix <- scale(x_matrix)
+
+y_vector <- final.bloom.data$BloomIndicator
+
+cv_fit <- cv.glmnet(x_matrix, y_vector, alpha = 1, nfolds = 10, family = "binomial")
+
+best_lambda <- cv_fit$lambda.min
+
+lasso.model <- glmnet(x_matrix, y_vector, alpha = 1, lambda = best_lambda, family = "binomial")
+
+lasso.coef <- coef(lasso.model)
+print(lasso.coef)
+
+nonzero_coef <- lasso.coef[lasso.coef != 0]
+```
+
+
+## Polynomial Regression
+
+# Optimal Degree Selection
+```{R}
+data <- data_modeling[c("bloom_doy", "AvgEventDuration")]
+
+# Define a range of degrees to test
+degrees <- 1:4
+
+# Store results
+results <- data.frame(degree = integer(), RMSE = numeric())
+
+for (deg in degrees) {
+  # Generate polynomial features
+  data$PolyAvgEventDuration <- poly(data$AvgEventDuration, degree = deg)
+  
+  # Use caret to perform 10-fold cross-validation
+  fitControl <- trainControl(method = "cv", number = 10)
+  model <- train(bloom_doy ~ PolyAvgEventDuration, data = data, method = "lm", trControl = fitControl)
+  
+  # Store results
+  results <- rbind(results, data.frame(degree = deg, RMSE = model$results$RMSE))
+}
+
+# Find the degree with the lowest RMSE
+optimal_degree <- results[which.min(results$RMSE), "degree"]
+print(optimal_degree)
+
+```
+
+
+```{R}
+data_modeling <- final.bloom.data[!is.na(final.bloom.data$bloom_doy), ]
+
+data_modeling$locationName <- as.factor(data_modeling$locationName)
+
+
+poly.model <- lm(bloom_doy ~ locationName * poly(AvgTemp, 3) + 
+                               locationName * poly(TotalPrecip, 1) + 
+                               locationName * poly(TotalGDD, 3) + 
+                               locationName * poly(TotalFreezeHours, 4) + 
+                               locationName * poly(AvgEventDuration, 4), 
+                 data = data_modeling)
+
+summary(poly.model)
+
+```
+
+```{R}
+train_index <- createDataPartition(data_modeling$bloom_doy, p = 0.8, list = FALSE)
+train_data <- data_modeling[train_index, ]
+test_data <- data_modeling[-train_index, ]
+
+# Now, let's make predictions on the test set
+test_predictions <- predict(poly.model, newdata = test_data)
+
+# Add the predictions to the test data
+test_data$PredictedBloomDOY <- test_predictions
+
+# Assess the model's performance
+# Here we use Root Mean Squared Error (RMSE) as an example
+rmse <- sqrt(mean((test_data$bloom_doy - test_data$PredictedBloomDOY)^2))
+print(paste("RMSE:", rmse))
+
+#predicted Data alongside with true data 
+write.table(test_data[, c("YearMonth", "locationName", "bloom_doy", "PredictedBloomDOY")], 
+            file = "c:/Users/justd/Desktop/bloom_predictions.txt", 
+            row.names = FALSE, 
+            col.names = TRUE, 
+            sep = "\t")
+```
+# Estimated Bloom DOY - Trend Analysis 
+
+```{R}
+library(forecast)
+
+trend_models <- lapply(split(test_data, test_data$locationName), function(data){
+  lm(PredictedBloomDOY ~ Year, data = data)
+})
+
+# Predict the DOY for the current year (2024) using the trend models
+predictions_for_2024 <- lapply(trend_models, function(model){
+  data.frame(EstimatedBloomDOY = predict(model, newdata = data.frame(Year = 2024)))
+})
+
+# Combine predictions with location names
+estimated_DOY <- do.call(rbind, predictions_for_2024)
+estimated_DOY$Year <- 2024
+estimated_DOY$locationName <- rownames(estimated_DOY)
+
+# Convert DOY to dates
+estimated_DOY$EstimatedBloomDate <- as.Date(estimated_DOY$EstimatedBloomDOY - 1, origin = "2024-01-01")
+
+# Output the results
+write.table(estimated_DOY[, c("locationName", "EstimatedBloomDOY")],
+            file = "C:/Users/justd/Desktop/predictions.txt",
+            row.names = FALSE, sep = ",")
+
+
+
+```
+#Interval prediction 
+
+```{R}
+predictions_for_2024 <- lapply(trend_models, function(model) {
+  predict(model, newdata = data.frame(Year = 2024), interval = "prediction", level = 0.95)
+})
+
+# Combine predictions with location names and round to the nearest tenth
+predictions_for_2024 <- list()
+
+# Loop through the names of the trend models (which should correspond to location names)
+for(location_name in names(trend_models)) {
+  model <- trend_models[[location_name]]
+  prediction <- predict(model, newdata = data.frame(Year = 2024), interval = "prediction", level = 0.95)
+  # Round predictions and intervals to the nearest tenth
+  prediction <- data.frame(
+    fit = round(prediction[, "fit"], 1),
+    lwr = round(prediction[, "lwr"], 1),
+    upr = round(prediction[, "upr"], 1),
+    locationName = location_name  # Add the location name to the dataframe
+  )
+  predictions_for_2024[[location_name]] <- prediction
+}
+# Combine predictions with location names
+estimated_DOY <- do.call(rbind, predictions_for_2024)
+
+# Convert DOY to dates
+estimated_DOY$EstimatedBloomDate <- as.Date(estimated_DOY$fit - 1, origin = "2024-01-01")
+estimated_DOY$LowerDate <- as.Date(estimated_DOY$lwr - 1, origin = "2024-01-01")
+estimated_DOY$UpperDate <- as.Date(estimated_DOY$upr - 1, origin = "2024-01-01")
+
+estimated_DOY$locationName <- sub("X", "", estimated_DOY$locationName)
+
+# Output the results
+write.table(estimated_DOY[, c("locationName", "fit", "lwr", "upr")],
+            file = "C:/Users/justd/Desktop/predictions.txt",
+            row.names = FALSE, sep = ",", col.names = c("location", "prediction", "lower", "upper"))
+```
+
+
+
+
